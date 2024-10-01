@@ -13,6 +13,9 @@ from install_playwright import install
 from PIL import Image
 from playwright.sync_api import sync_playwright
 
+import tempfile
+import os
+
 THISDIR = str(Path(__file__).resolve().parent)
 
 
@@ -86,7 +89,6 @@ def convertMultLottie2ALL(fileNames: list[str], newFileNames: list[str], quality
 			duration=int(duration * 1000 / len(images)),
 			loop=0,
 		)
-	rmtree("temp", ignore_errors=True)
 
 
 def convertMultLottie2GIF(fileNames: list[str], newFileNames: list[str], quality: int = 1):
@@ -112,7 +114,6 @@ def convertMultLottie2GIF(fileNames: list[str], newFileNames: list[str], quality
 			transparency=0,
 			disposal=2,
 		)
-	rmtree("temp", ignore_errors=True)
 
 
 def convertMultLottie2Webp(fileNames: list[str], newFileNames: list[str], quality: int = 1):
@@ -136,7 +137,6 @@ def convertMultLottie2Webp(fileNames: list[str], newFileNames: list[str], qualit
 			duration=int(duration * 1000 / len(images)),
 			loop=0,
 		)
-	rmtree("temp", ignore_errors=True)
 
 
 def _resQuality(quality: int, numFrames: int, duration: int):
@@ -161,35 +161,36 @@ def convertLotties2PIL(
 		list[tuple[list[Image], float]]: pil images to write to gif/ webp and duration
 
 	"""
-	lotties = []
-	for fileName in fileNames:
-		with open(fileName, "rb") as binfile:
-			magicNumber = binfile.read(2)
-			binfile.seek(0)
-			if magicNumber == b"\x1f\x8b":  # gzip magic number
-				try:
-					archive = gzip.open(fileName, "rb")
-					lottie = json.load(archive)
-				except gzip.BadGzipFile:
-					continue
-			else:
-				lottie = json.loads(Path(fileName).read_text(encoding="utf-8"))
-		lotties.append(lottie)
-	frameData = recordLotties([json.dumps(lottie) for lottie in lotties], quality)
+	with tempfile.TemporaryDirectory() as tempdir:
+		lotties = []
+		for fileName in fileNames:
+			with open(fileName, "rb") as binfile:
+				magicNumber = binfile.read(2)
+				binfile.seek(0)
+				if magicNumber == b"\x1f\x8b":  # gzip magic number
+					try:
+						archive = gzip.open(fileName, "rb")
+						lottie = json.load(archive)
+					except gzip.BadGzipFile:
+						continue
+				else:
+					lottie = json.loads(Path(fileName).read_text(encoding="utf-8"))
+			lotties.append(lottie)
+		frameData = recordLotties([json.dumps(lottie) for lottie in lotties], quality,tempdir)
 
-	imageDataList = []
-	for index, frameDataInstance in enumerate(frameData):
-		images = []
-		duration = frameDataInstance[0]
-		numFrames = frameDataInstance[1]
-		step = frameDataInstance[2]
-		for frame in range(0, numFrames, step):
-			images.append(Image.open(f"temp/temp{index}_{frame}.png"))
-		imageDataList.append([images, duration])
-	return imageDataList
+		imageDataList = []
+		for index, frameDataInstance in enumerate(frameData):
+			images = []
+			duration = frameDataInstance[0]
+			numFrames = frameDataInstance[1]
+			step = frameDataInstance[2]
+			for frame in range(0, numFrames, step):
+				images.append(Image.open(os.path.join(tempdir,f"temp{index}_{frame}.png")))
+			imageDataList.append([images, duration])
+		return imageDataList
 
 
-def recordLotties(lottieData: list[str], quality: int) -> list[list[int]]:
+def recordLotties(lottieData: list[str], quality: int,tempdir: str) -> list[list[int]]:
 	"""Record the lottie data to a set of images
 
 	Args:
@@ -202,17 +203,12 @@ def recordLotties(lottieData: list[str], quality: int) -> list[list[int]]:
 		list[list[int]]: duration and number of frames
 
 	"""
-	# Make temp dir
-	if os.path.isdir("temp"):
-		pass
-	else:
-		os.mkdir("temp")
 	with sync_playwright() as p:
 		install(p.chromium)
 		browser = p.chromium.launch()
 
 		frameData = [
-			recordSingleLottie(browser, lottieDataInstance, quality, index)
+			recordSingleLottie(browser, lottieDataInstance, quality, index,tempdir)
 			for index, lottieDataInstance in enumerate(lottieData)
 		]
 
@@ -221,7 +217,7 @@ def recordLotties(lottieData: list[str], quality: int) -> list[list[int]]:
 	return frameData
 
 
-def recordSingleLottie(browser, lottieDataInstance, quality, index) -> list[int]:
+def recordSingleLottie(browser, lottieDataInstance, quality, index, tempdir) -> list[int]:
 	page = browser.new_page()
 	lottie = json.loads(lottieDataInstance)
 	html = (
@@ -238,7 +234,7 @@ def recordSingleLottie(browser, lottieDataInstance, quality, index) -> list[int]
 	# Take a screenshot of each frame
 	step = _resQuality(quality, numFrames, duration)
 	for frame in range(0, numFrames, step):
-		rootHandle.screenshot(path=f"temp/temp{index}_{frame}.png", omit_background=True)
+		rootHandle.screenshot(path=os.path.join(tempdir,f"temp{index}_{frame}.png"), omit_background=True)
 		page.evaluate(f"animation.goToAndStop({frame + 1}, true)")
 	page.close()
 	return [duration, numFrames, step]
